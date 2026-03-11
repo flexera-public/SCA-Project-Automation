@@ -4,6 +4,11 @@
 # CodeInsight Project Automation Script
 # This script automates project creation, codebase upload, scanning, and 
 # inventory validation using CodeInsight REST APIs
+#
+# Usage:
+#   Interactive mode: ./codeinsight-scan-automation.sh
+#   CLI mode: ./codeinsight-scan-automation.sh <codebase_path> <project_name> [scanner_alias] [server_url] [auth_token]
+#   Jenkins mode: Use environment variables (CI_CODEBASE_PATH, CI_PROJECT_NAME, etc.)
 ################################################################################
 
 # Check if running with bash
@@ -20,12 +25,62 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# Hardcoded Configuration
-SERVER_HOST="scau20-mysql8.flexera.com"
-SERVER_PORT="8888"
-BASE_URL="http://${SERVER_HOST}:${SERVER_PORT}/codeinsight/api"
-# Replace with your actual JWT token (DO NOT include 'Bearer' prefix)
-AUTH_TOKEN="eyJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJhZG1pbiIsInVzZXJJZCI6MSwiaWF0IjoxNzcwNzA3MzE0fQ.UP40pvhzNnkBCdBuxB6dyu987mIoiVF77fZ-8Ag_Rh9L3cV-8sQdv19u_B4y_DxVl-oXw-tuWRRdD3lYXfnDVQ"
+################################################################################
+# Function: Display usage help
+################################################################################
+show_usage() {
+    echo "Usage: $0 [OPTIONS] [CODEBASE_PATH] [PROJECT_NAME] [SCANNER_ALIAS] [SERVER_URL] [AUTH_TOKEN]"
+    echo ""
+    echo "Options:"
+    echo "  -h, --help              Show this help message"
+    echo ""
+    echo "Arguments (optional - will be prompted if not provided):"
+    echo "  CODEBASE_PATH           Full path to zip file (e.g., /path/to/codebase.zip)"
+    echo "  PROJECT_NAME            Name of the CodeInsight project"
+    echo "  SCANNER_ALIAS           Scanner alias (default: 'scanner')"
+    echo "  SERVER_URL              Full server URL (e.g., http://host:8888 or https://host:8443)"
+    echo "  AUTH_TOKEN              JWT authentication token"
+    echo ""
+    echo "Environment Variables (for Jenkins/CI integration):"
+    echo "  CI_CODEBASE_PATH        Path to codebase zip file"
+    echo "  CI_PROJECT_NAME         Project name"
+    echo "  CI_SCANNER_ALIAS        Scanner alias (optional)"
+    echo "  CI_SERVER_URL           CodeInsight server URL (http://host:port or https://host:port)"
+    echo "  CI_AUTH_TOKEN           JWT token for authentication"
+    echo ""
+    echo "Examples:"
+    echo "  # Interactive mode (prompts for all inputs)"
+    echo "  $0"
+    echo ""
+    echo "  # CLI mode with arguments"
+    echo "  $0 /path/to/code.zip MyProject scanner http://localhost:8888 <token>"
+    echo ""
+    echo "  # Jenkins mode (using environment variables)"
+    echo "  export CI_SERVER_URL=\"https://secure-server.com:8443\""
+    echo "  export CI_AUTH_TOKEN=\"your-jwt-token\""
+    echo "  export CI_CODEBASE_PATH=\"/path/to/code.zip\""
+    echo "  export CI_PROJECT_NAME=\"MyProject\""
+    echo "  $0"
+    exit 0
+}
+
+# Parse help flag
+if [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
+    show_usage
+fi
+
+# Default Configuration (can be overridden by arguments or environment variables)
+SERVER_URL="${CI_SERVER_URL:-http://scau20-mysql8.flexera.com:8888}"
+AUTH_TOKEN="${CI_AUTH_TOKEN:-eyJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJhZG1pbiIsInVzZXJJZCI6MSwiaWF0IjoxNzcwNzA3MzE0fQ.UP40pvhzNnkBCdBuxB6dyu987mIoiVF77fZ-8Ag_Rh9L3cV-8sQdv19u_B4y_DxVl-oXw-tuWRRdD3lYXfnDVQ}"
+
+# Build BASE_URL from SERVER_URL
+BASE_URL="${SERVER_URL}/codeinsight/api"
+
+# Detect SSL and set curl flags for certificate bypass
+CURL_SSL_FLAGS=""
+if [[ "$SERVER_URL" == https://* ]]; then
+    CURL_SSL_FLAGS="-k"
+fi
 
 # Debug mode (set to true to see curl commands)
 DEBUG_MODE=true
@@ -33,7 +88,7 @@ DEBUG_MODE=true
 # Scan configuration (adjust as needed)
 SCAN_PROFILE_NAME="Basic Scan Profile (Without CL)"
 POLICY_PROFILE_NAME="Default License Policy Profile"
-SCAN_SERVER_ALIAS="scanner"
+SCAN_SERVER_ALIAS="${CI_SCANNER_ALIAS:-scanner}"
 AUTO_PUBLISH="true"
 MARK_FILES_AS_REVIEWED="false"
 PROJECT_OWNER="admin"
@@ -44,6 +99,27 @@ PRIVATE_PROJECT="false"
 RETRY_INTERVAL_MS=60000  # 60 seconds in milliseconds
 RETRY_COUNT=20
 RETRY_INTERVAL_SEC=$((RETRY_INTERVAL_MS / 1000))
+
+# Parse command-line arguments if provided
+if [[ -n "$1" ]] && [[ "$1" != "-"* ]]; then
+    # Only override if argument is non-empty
+    if [[ -n "$1" ]]; then CODEBASE_PATH="$1"; fi
+    if [[ -n "$2" ]]; then PROJECT_NAME="$2"; fi
+    if [[ -n "$3" ]]; then SCAN_SERVER_ALIAS="$3"; fi
+    if [[ -n "$4" ]]; then 
+        SERVER_URL="$4"
+        # Rebuild BASE_URL if SERVER_URL changed
+        BASE_URL="${SERVER_URL}/codeinsight/api"
+        
+        # Re-detect SSL if SERVER_URL changed
+        if [[ "$SERVER_URL" == https://* ]]; then
+            CURL_SSL_FLAGS="-k"
+        else
+            CURL_SSL_FLAGS=""
+        fi
+    fi
+    if [[ -n "$5" ]]; then AUTH_TOKEN="$5"; fi
+fi
 
 ################################################################################
 # Function: Print colored messages (output to stderr to avoid command substitution capture)
@@ -128,7 +204,7 @@ check_project_exists() {
     print_debug "  -H 'Authorization: Bearer ${AUTH_TOKEN}' \\"
     print_debug "  -H 'Accept: application/json'"
 
-    response=$(curl -s -w "\n%{http_code}" -X GET \
+    response=$(curl -s -w "\n%{http_code}" $CURL_SSL_FLAGS -X GET \
         "${BASE_URL}/project/id?projectName=${encoded_name}" \
         -H "Authorization: Bearer ${AUTH_TOKEN}" \
         -H "Accept: application/json")
@@ -187,7 +263,7 @@ EOF
     print_debug "  -H 'Accept: application/json' \\"
     print_debug "  -d '${json_payload}'"
 
-    response=$(curl -s -w "\n%{http_code}" -X POST \
+    response=$(curl -s -w "\n%{http_code}" $CURL_SSL_FLAGS -X POST \
         "${BASE_URL}/projects" \
         -H "Authorization: Bearer ${AUTH_TOKEN}" \
         -H "Content-Type: application/json" \
@@ -227,7 +303,7 @@ upload_codebase() {
     print_debug "  -H 'Content-Type: application/octet-stream' \\"
     print_debug "  --data-binary '@${codebase_path}'"
 
-    response=$(curl -s -w "\n%{http_code}" -X POST \
+    response=$(curl -s -w "\n%{http_code}" $CURL_SSL_FLAGS -X POST \
         "${BASE_URL}/project/uploadProjectCodebase?projectId=${project_id}&deleteExistingFileOnServer=true&expansionLevel=1" \
         -H "Authorization: Bearer ${AUTH_TOKEN}" \
         -H "Accept: application/json" \
@@ -259,7 +335,7 @@ trigger_scan() {
     print_debug "  -H 'Authorization: Bearer ${AUTH_TOKEN}' \\"
     print_debug "  -H 'Accept: application/json'"
 
-    response=$(curl -s -w "\n%{http_code}" -X POST \
+    response=$(curl -s -w "\n%{http_code}" $CURL_SSL_FLAGS -X POST \
         "${BASE_URL}/scanResource/projectScan/${project_id}?fullRescan=false" \
         -H "Authorization: Bearer ${AUTH_TOKEN}" \
         -H "Accept: application/json")
@@ -297,7 +373,7 @@ check_scan_status() {
     print_debug "  -H 'Authorization: Bearer ${AUTH_TOKEN}' \\"
     print_debug "  -H 'Accept: application/json'"
 
-    response=$(curl -s -w "\n%{http_code}" -X GET \
+    response=$(curl -s -w "\n%{http_code}" $CURL_SSL_FLAGS -X GET \
         "${BASE_URL}/project/scanStatus/${task_id}" \
         -H "Authorization: Bearer ${AUTH_TOKEN}" \
         -H "Accept: application/json")
@@ -390,7 +466,7 @@ check_inventory_for_huggingface() {
     print_debug "  -H 'Authorization: Bearer ${AUTH_TOKEN}' \\"
     print_debug "  -H 'Accept: application/json'"
 
-    response=$(curl -s -w "\n%{http_code}" -X GET \
+    response=$(curl -s -w "\n%{http_code}" $CURL_SSL_FLAGS -X GET \
         "${BASE_URL}/project/inventory/${project_id}?skipVulnerabilities=false&published=true&size=100&page=1&includeFiles=true&includeCopyrights=false" \
         -H "Authorization: Bearer ${AUTH_TOKEN}" \
         -H "Accept: application/json")
@@ -441,22 +517,56 @@ main() {
     echo "============================================================================="
     echo ""
 
-    # Request runtime parameters
-    read -p "Enter Codebase Path (full path to zip file): " CODEBASE_PATH
-    read -p "Enter Project Name: " PROJECT_NAME
-    read -p "Enter Scanner Alias (optional, press Enter for default): " SCANNER_INPUT
-
-    # Use default scanner if not provided
-    if [[ -n "$SCANNER_INPUT" ]]; then
-        SCAN_SERVER_ALIAS="$SCANNER_INPUT"
+    # Check if running in non-interactive mode (arguments or env vars provided)
+    if [[ -z "$CODEBASE_PATH" ]] || [[ -z "$PROJECT_NAME" ]]; then
+        # Interactive mode - prompt for missing parameters
+        if [[ -z "$CODEBASE_PATH" ]]; then
+            read -p "Enter Codebase Path (full path to zip file): " CODEBASE_PATH
+        fi
+        
+        if [[ -z "$PROJECT_NAME" ]]; then
+            read -p "Enter Project Name: " PROJECT_NAME
+        fi
+        
+        read -p "Enter Scanner Alias (optional, press Enter for default '$SCAN_SERVER_ALIAS'): " SCANNER_INPUT
+        if [[ -n "$SCANNER_INPUT" ]]; then
+            SCAN_SERVER_ALIAS="$SCANNER_INPUT"
+        fi
+        
+        read -p "Enter Server URL (optional, press Enter for default '$SERVER_URL'): " SERVER_INPUT
+        if [[ -n "$SERVER_INPUT" ]]; then
+            SERVER_URL="$SERVER_INPUT"
+            BASE_URL="${SERVER_URL}/codeinsight/api"
+            
+            # Re-detect SSL
+            if [[ "$SERVER_URL" == https://* ]]; then
+                CURL_SSL_FLAGS="-k"
+                print_info "SSL detected - Certificate verification will be bypassed"
+            else
+                CURL_SSL_FLAGS=""
+            fi
+        fi
+        
+        # Optionally allow token override in interactive mode
+        read -s -p "Enter Auth Token (optional, press Enter to use configured token): " TOKEN_INPUT
+        echo ""
+        if [[ -n "$TOKEN_INPUT" ]]; then
+            AUTH_TOKEN="$TOKEN_INPUT"
+        fi
     fi
 
     echo ""
     print_info "Configuration:"
-    echo "  - Server: ${BASE_URL}"
+    echo "  - Server: ${SERVER_URL}"
+    echo "  - Base URL: ${BASE_URL}"
     echo "  - Project Name: ${PROJECT_NAME}"
     echo "  - Codebase Path: ${CODEBASE_PATH}"
     echo "  - Scanner Alias: ${SCAN_SERVER_ALIAS}"
+    if [[ -n "$CURL_SSL_FLAGS" ]]; then
+        echo "  - SSL Mode: Enabled (certificate verification bypassed)"
+    else
+        echo "  - SSL Mode: Disabled (HTTP)"
+    fi
     echo ""
 
     # Step 0: Validate configuration (JWT token)
