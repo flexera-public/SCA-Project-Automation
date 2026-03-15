@@ -633,7 +633,111 @@ generate_html_report() {
             color: #95a5a6;
             font-style: italic;
         }
+        
+        /* Filter Controls */
+        .filter-container {
+            background-color: white;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        .filter-label {
+            font-weight: 600;
+            color: #2c3e50;
+            font-size: 14px;
+        }
+        
+        /* Toggle Switch */
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 60px;
+            height: 30px;
+        }
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            transition: .4s;
+            border-radius: 30px;
+        }
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 22px;
+            width: 22px;
+            left: 4px;
+            bottom: 4px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+        input:checked + .slider {
+            background-color: #e74c3c;
+        }
+        input:checked + .slider:before {
+            transform: translateX(30px);
+        }
+        .filter-description {
+            color: #7f8c8d;
+            font-size: 13px;
+        }
+        .filter-count {
+            color: #e74c3c;
+            font-weight: bold;
+        }
+        
+        /* Hidden row styling */
+        tr.hidden {
+            display: none;
+        }
     </style>
+    <script>
+        function toggleAIFilter() {
+            const checkbox = document.getElementById('aiFilterToggle');
+            const rows = document.querySelectorAll('tbody tr');
+            let visibleCount = 0;
+            
+            rows.forEach(row => {
+                const isAIModel = row.getAttribute('data-ai-model') === 'true';
+                
+                if (checkbox.checked) {
+                    // Show only AI models
+                    if (isAIModel) {
+                        row.classList.remove('hidden');
+                        visibleCount++;
+                    } else {
+                        row.classList.add('hidden');
+                    }
+                } else {
+                    // Show all
+                    row.classList.remove('hidden');
+                    visibleCount++;
+                }
+            });
+            
+            // Update filter description
+            const description = document.getElementById('filterDescription');
+            if (checkbox.checked) {
+                description.innerHTML = 'Showing <span class="filter-count">' + visibleCount + '</span> AI Model components only';
+            } else {
+                description.innerHTML = 'Showing all components';
+            }
+        }
+    </script>
 </head>
 <body>
 EOF_HEADER
@@ -659,6 +763,16 @@ EOF_HEADER
             <div class="summary-label">AI Models Detected</div>
             <div class="summary-value" style="color: ${ai_model_count:-0} -gt 0 ? '#e74c3c' : '#27ae60';">${ai_model_count}</div>
         </div>
+    </div>
+    
+    <div class="filter-container">
+        <span class="filter-label">🔍 Filter:</span>
+        <label class="toggle-switch">
+            <input type="checkbox" id="aiFilterToggle" onchange="toggleAIFilter()">
+            <span class="slider"></span>
+        </label>
+        <span class="filter-label">Show AI Models Only</span>
+        <span class="filter-description" id="filterDescription">Showing all components</span>
     </div>
     
     <table>
@@ -730,8 +844,10 @@ EOF
             # Determine if detected by HuggingFace
             if [[ "$detection_notes" =~ HuggingFace ]]; then
                 ai_model='<span class="ai-model-true">TRUE</span>'
+                ai_model_flag="true"
             else
                 ai_model='<span class="ai-model-false">FALSE</span>'
+                ai_model_flag="false"
             fi
             
             # Handle N/A values and format output
@@ -750,9 +866,9 @@ EOF
                 usage_guidance='<span class="version-na">No guidance available</span>'
             fi
             
-            # Write table row to HTML file
+            # Write table row to HTML file with data attribute for filtering
             cat >> "$html_file" << EOF
-            <tr>
+            <tr data-ai-model="$ai_model_flag">
                 <td><strong>$component_name</strong></td>
                 <td>$version_name</td>
                 <td>$license_spdx</td>
