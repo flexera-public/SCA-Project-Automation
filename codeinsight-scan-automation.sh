@@ -91,7 +91,7 @@ POLICY_PROFILE_NAME="Default License Policy Profile"
 SCAN_SERVER_ALIAS="${CI_SCANNER_ALIAS:-scanner}"
 AUTO_PUBLISH="true"
 MARK_FILES_AS_REVIEWED="false"
-PROJECT_OWNER="venkat"
+PROJECT_OWNER="admin"
 RISK_LEVEL="MEDIUM"
 PRIVATE_PROJECT="false"
 
@@ -675,36 +675,60 @@ EOF_HEADER
 EOF
     
     # Parse JSON and extract inventory items
-    # Split JSON into individual inventory items
-    awk '/^  {/{item=""} {item=item $0} /"dockerLayerIds"/{if(item) print item; item=""}' "$json_file" | \
-    while IFS= read -r item_block; do
-        # Extract fields from each inventory item
-        component_name=$(echo "$item_block" | grep -o '"componentName": *"[^"]*"' | sed 's/"componentName": *"\(.*\)"/\1/' | head -1)
-        version_name=$(echo "$item_block" | grep -o '"componentVersionName": *"[^"]*"' | sed 's/"componentVersionName": *"\(.*\)"/\1/' | head -1)
-        license_spdx=$(echo "$item_block" | grep -o '"selectedLicenseSPDXIdentifier": *"[^"]*"' | sed 's/"selectedLicenseSPDXIdentifier": *"\(.*\)"/\1/' | head -1)
-        detection_notes=$(echo "$item_block" | grep -o '"detectionNotes": *"[^"]*"' | sed 's/"detectionNotes": *"\(.*\)"/\1/' | head -1)
-        usage_guidance=$(echo "$item_block" | grep -o '"usageGuidance": *"[^"]*"' | sed 's/"usageGuidance": *"\(.*\)"/\1/' | head -1)
+    # Process each inventory item by splitting on itemNumber markers
+    # This approach extracts complete blocks between "itemNumber" fields
+    
+    # Create a temp file to store processed items
+    TEMP_ITEMS=$(mktemp)
+    
+    # Split JSON into individual inventory items using itemNumber as delimiter
+    # Each item starts with "itemNumber" and we capture everything until the next one
+    grep -n '"itemNumber"' "$json_file" | while IFS=: read -r line_num _; do
+        # Get the next itemNumber line
+        next_line=$(grep -n '"itemNumber"' "$json_file" | grep -A1 "^${line_num}:" | tail -1 | cut -d: -f1)
         
-        # Determine if detected by HuggingFace
-        if echo "$detection_notes" | grep -q "HuggingFace Model Analyzer"; then
-            ai_model='<span class="ai-model-true">TRUE</span>'
+        if [[ -n "$next_line" ]] && [[ "$next_line" != "$line_num" ]]; then
+            # Extract lines between current and next itemNumber
+            sed -n "${line_num},$((next_line-1))p" "$json_file"
         else
-            ai_model='<span class="ai-model-false">FALSE</span>'
+            # This is the last item, extract until end of inventoryItems array
+            sed -n "${line_num},\$p" "$json_file" | sed '/^  \]/q'
         fi
-        
-        # Handle N/A values
-        [[ "$version_name" == "N/A" || -z "$version_name" ]] && version_name='<span class="version-na">N/A</span>'
-        [[ -z "$license_spdx" || "$license_spdx" == "I don't know" ]] && license_spdx='<span class="version-na">Unknown</span>' || license_spdx="<span class=\"license\">$license_spdx</span>"
-        
-        # Clean up usage guidance HTML tags and truncate
-        usage_guidance=$(echo "$usage_guidance" | sed 's/<[^>]*>//g' | sed 's/&lt;/</g; s/&gt;/>/g; s/&quot;/"/g' | cut -c 1-150)
-        [[ -z "$usage_guidance" || "$usage_guidance" == "N/A" ]] && usage_guidance='<span class="version-na">No guidance available</span>'
-        
-        # Skip if component name is empty
-        [[ -z "$component_name" ]] && continue
-        
-        # Write table row
-        cat >> "$html_file" << EOF
+        echo "___ITEM_SEPARATOR___"
+    done > "$TEMP_ITEMS"
+    
+    # Now process each item block
+    item_count=0
+    current_item=""
+    while IFS= read -r line; do
+        if [[ "$line" == "___ITEM_SEPARATOR___" ]]; then
+            if [[ -n "$current_item" ]]; then
+                # Process the complete item block
+                component_name=$(echo "$current_item" | grep -o '"componentName": *"[^"]*"' | sed 's/"componentName": *"\([^"]*\)"/\1/' | head -1)
+                version_name=$(echo "$current_item" | grep -o '"componentVersionName": *"[^"]*"' | sed 's/"componentVersionName": *"\([^"]*\)"/\1/' | head -1)
+                license_spdx=$(echo "$current_item" | grep -o '"selectedLicenseSPDXIdentifier": *"[^"]*"' | sed 's/"selectedLicenseSPDXIdentifier": *"\([^"]*\)"/\1/' | head -1)
+                detection_notes=$(echo "$current_item" | grep -o '"detectionNotes": *"[^"]*"' | sed 's/"detectionNotes": *"\([^"]*\)"/\1/' | head -1)
+                usage_guidance=$(echo "$current_item" | grep -o '"usageGuidance": *"[^"]*"' | sed 's/"usageGuidance": *"\([^"]*\)"/\1/' | head -1)
+                
+                # Only process if we got a component name
+                if [[ -n "$component_name" ]]; then
+                    # Determine if detected by HuggingFace
+                    if echo "$detection_notes" | grep -q "HuggingFace Model Analyzer"; then
+                        ai_model='<span class="ai-model-true">TRUE</span>'
+                    else
+                        ai_model='<span class="ai-model-false">FALSE</span>'
+                    fi
+                    
+                    # Handle N/A values
+                    [[ "$version_name" == "N/A" || -z "$version_name" ]] && version_name='<span class="version-na">N/A</span>'
+                    [[ -z "$license_spdx" || "$license_spdx" == "I don't know" ]] && license_spdx='<span class="version-na">Unknown</span>' || license_spdx="<span class=\"license\">$license_spdx</span>"
+                    
+                    # Clean up usage guidance HTML tags and truncate
+                    usage_guidance=$(echo "$usage_guidance" | sed 's/<[^>]*>//g' | sed 's/&lt;/</g; s/&gt;/>/g; s/&quot;/"/g; s/\\n/ /g' | cut -c 1-200)
+                    [[ -z "$usage_guidance" || "$usage_guidance" == "N/A" ]] && usage_guidance='<span class="version-na">No guidance available</span>'
+                    
+                    # Write table row
+                    cat >> "$html_file" << EOF
             <tr>
                 <td><strong>$component_name</strong></td>
                 <td>$version_name</td>
@@ -713,7 +737,19 @@ EOF
                 <td class="usage-guidance">$usage_guidance</td>
             </tr>
 EOF
-    done
+                    item_count=$((item_count + 1))
+                fi
+            fi
+            current_item=""
+        else
+            current_item="${current_item}${line}"$'\n'
+        fi
+    done < "$TEMP_ITEMS"
+    
+    # Clean up temp file
+    rm -f "$TEMP_ITEMS"
+    
+    print_debug "Processed $item_count inventory items into HTML report"
     
     # Close HTML
     cat >> "$html_file" << 'EOF_FOOTER'
