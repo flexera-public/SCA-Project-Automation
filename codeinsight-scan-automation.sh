@@ -675,60 +675,83 @@ EOF_HEADER
 EOF
     
     # Parse JSON and extract inventory items
-    # Process each inventory item by splitting on itemNumber markers
-    # This approach extracts complete blocks between "itemNumber" fields
+    # This approach handles both single-line and multi-line JSON
+    # by using pattern-based split on {"itemNumber": instead of line-based extraction
     
-    # Create a temp file to store processed items
-    TEMP_ITEMS=$(mktemp)
+    print_debug "Starting JSON parsing for inventory items"
     
-    # Split JSON into individual inventory items using itemNumber as delimiter
-    # Each item starts with "itemNumber" and we capture everything until the next one
-    grep -n '"itemNumber"' "$json_file" | while IFS=: read -r line_num _; do
-        # Get the next itemNumber line
-        next_line=$(grep -n '"itemNumber"' "$json_file" | grep -A1 "^${line_num}:" | tail -1 | cut -d: -f1)
-        
-        if [[ -n "$next_line" ]] && [[ "$next_line" != "$line_num" ]]; then
-            # Extract lines between current and next itemNumber
-            sed -n "${line_num},$((next_line-1))p" "$json_file"
-        else
-            # This is the last item, extract until end of inventoryItems array
-            sed -n "${line_num},\$p" "$json_file" | sed '/^  \]/q'
-        fi
-        echo "___ITEM_SEPARATOR___"
-    done > "$TEMP_ITEMS"
+    # Read the entire JSON file content
+    json_content=$(cat "$json_file")
     
-    # Now process each item block
+    # Extract just the inventoryItems array content
+    # This removes everything before "inventoryItems":[ and after the closing ]
+    inventory_section=$(echo "$json_content" | sed 's/.*"inventoryItems":\[//' | sed 's/\]}\s*$//')
+    
+    # Split on the pattern {"itemNumber": to separate individual items
+    # Add a unique separator before each item for easier splitting
+    inventory_with_separators=$(echo "$inventory_section" | sed 's/{[[:space:]]*"itemNumber":/\n___ITEM_START___\n{"itemNumber":/g')
+    
+    # Now process each item
     item_count=0
-    current_item=""
+    
+    # Use a while loop with process substitution to avoid subshell variable scope issues
     while IFS= read -r line; do
-        if [[ "$line" == "___ITEM_SEPARATOR___" ]]; then
-            if [[ -n "$current_item" ]]; then
-                # Process the complete item block
-                component_name=$(echo "$current_item" | grep -o '"componentName": *"[^"]*"' | sed 's/"componentName": *"\([^"]*\)"/\1/' | head -1)
-                version_name=$(echo "$current_item" | grep -o '"componentVersionName": *"[^"]*"' | sed 's/"componentVersionName": *"\([^"]*\)"/\1/' | head -1)
-                license_spdx=$(echo "$current_item" | grep -o '"selectedLicenseSPDXIdentifier": *"[^"]*"' | sed 's/"selectedLicenseSPDXIdentifier": *"\([^"]*\)"/\1/' | head -1)
-                detection_notes=$(echo "$current_item" | grep -o '"detectionNotes": *"[^"]*"' | sed 's/"detectionNotes": *"\([^"]*\)"/\1/' | head -1)
-                usage_guidance=$(echo "$current_item" | grep -o '"usageGuidance": *"[^"]*"' | sed 's/"usageGuidance": *"\([^"]*\)"/\1/' | head -1)
-                
-                # Only process if we got a component name
-                if [[ -n "$component_name" ]]; then
-                    # Determine if detected by HuggingFace
-                    if echo "$detection_notes" | grep -q "HuggingFace Model Analyzer"; then
-                        ai_model='<span class="ai-model-true">TRUE</span>'
-                    else
-                        ai_model='<span class="ai-model-false">FALSE</span>'
-                    fi
-                    
-                    # Handle N/A values
-                    [[ "$version_name" == "N/A" || -z "$version_name" ]] && version_name='<span class="version-na">N/A</span>'
-                    [[ -z "$license_spdx" || "$license_spdx" == "I don't know" ]] && license_spdx='<span class="version-na">Unknown</span>' || license_spdx="<span class=\"license\">$license_spdx</span>"
-                    
-                    # Clean up usage guidance HTML tags and truncate
-                    usage_guidance=$(echo "$usage_guidance" | sed 's/<[^>]*>//g' | sed 's/&lt;/</g; s/&gt;/>/g; s/&quot;/"/g; s/\\n/ /g' | cut -c 1-200)
-                    [[ -z "$usage_guidance" || "$usage_guidance" == "N/A" ]] && usage_guidance='<span class="version-na">No guidance available</span>'
-                    
-                    # Write table row
-                    cat >> "$html_file" << EOF
+        # Skip empty lines and the separator marker itself
+        if [[ "$line" == "___ITEM_START___" ]]; then
+            continue
+        fi
+        
+        # Skip lines that don't start with {"itemNumber"
+        if [[ ! "$line" =~ ^\{\"itemNumber\": ]]; then
+            continue
+        fi
+        
+        # Extract the item block (everything up to the next item or end)
+        # This line should contain a complete inventory item JSON object
+        item_json="$line"
+        
+        # Extract fields using grep and sed
+        component_name=$(echo "$item_json" | grep -o '"componentName":"[^"]*"' | sed 's/"componentName":"\([^"]*\)"/\1/' | head -1)
+        version_name=$(echo "$item_json" | grep -o '"componentVersionName":"[^"]*"' | sed 's/"componentVersionName":"\([^"]*\)"/\1/' | head -1)
+        license_spdx=$(echo "$item_json" | grep -o '"selectedLicenseSPDXIdentifier":"[^"]*"' | sed 's/"selectedLicenseSPDXIdentifier":"\([^"]*\)"/\1/' | head -1)
+        
+        # For detectionNotes and usageGuidance, we need to handle escaped content carefully
+        # Extract a larger chunk that includes the field and look for HuggingFace pattern
+        detection_notes=$(echo "$item_json" | grep -o '"detectionNotes":"[^"]*HuggingFace[^"]*"' | head -1)
+        
+        # Extract usage guidance (may contain HTML, so we'll grab everything between the quotes)
+        # Use a more robust pattern that handles escaped quotes and HTML content
+        usage_guidance=$(echo "$item_json" | sed 's/.*"usageGuidance":"\([^"]*\).*/\1/' | sed 's/\\n/ /g' | sed 's/<[^>]*>//g' | cut -c 1-200)
+        
+        # Only process if we got a component name
+        if [[ -n "$component_name" ]]; then
+            print_debug "Processing component: $component_name"
+            
+            # Determine if detected by HuggingFace
+            if [[ "$detection_notes" =~ HuggingFace ]]; then
+                ai_model='<span class="ai-model-true">TRUE</span>'
+            else
+                ai_model='<span class="ai-model-false">FALSE</span>'
+            fi
+            
+            # Handle N/A values and format output
+            if [[ "$version_name" == "N/A" || -z "$version_name" ]]; then
+                version_name='<span class="version-na">N/A</span>'
+            fi
+            
+            if [[ -z "$license_spdx" || "$license_spdx" == "I don't know" ]]; then
+                license_spdx='<span class="version-na">Unknown</span>'
+            else
+                license_spdx="<span class=\"license\">$license_spdx</span>"
+            fi
+            
+            # Handle usage guidance
+            if [[ -z "$usage_guidance" || "$usage_guidance" == "N/A" ]]; then
+                usage_guidance='<span class="version-na">No guidance available</span>'
+            fi
+            
+            # Write table row to HTML file
+            cat >> "$html_file" << EOF
             <tr>
                 <td><strong>$component_name</strong></td>
                 <td>$version_name</td>
@@ -737,19 +760,12 @@ EOF
                 <td class="usage-guidance">$usage_guidance</td>
             </tr>
 EOF
-                    item_count=$((item_count + 1))
-                fi
-            fi
-            current_item=""
-        else
-            current_item="${current_item}${line}"$'\n'
+            item_count=$((item_count + 1))
+            print_debug "Added item $item_count: $component_name"
         fi
-    done < "$TEMP_ITEMS"
+    done < <(echo "$inventory_with_separators")
     
-    # Clean up temp file
-    rm -f "$TEMP_ITEMS"
-    
-    print_debug "Processed $item_count inventory items into HTML report"
+    print_success "Processed $item_count inventory items into HTML report"
     
     # Close HTML
     cat >> "$html_file" << 'EOF_FOOTER'
