@@ -91,7 +91,7 @@ POLICY_PROFILE_NAME="Default License Policy Profile"
 SCAN_SERVER_ALIAS="${CI_SCANNER_ALIAS:-scanner}"
 AUTO_PUBLISH="true"
 MARK_FILES_AS_REVIEWED="false"
-PROJECT_OWNER="venkat"
+PROJECT_OWNER="admin"
 RISK_LEVEL="MEDIUM"
 PRIVATE_PROJECT="false"
 
@@ -477,27 +477,24 @@ check_inventory_for_huggingface() {
     if [[ "$http_code" -eq 200 ]]; then
         print_success "Inventory fetched successfully"
         
+        # Save full inventory JSON for HTML report generation
+        INVENTORY_JSON_FILE="inventory-${project_id}.json"
+        echo "$body" > "$INVENTORY_JSON_FILE"
+        print_info "Inventory saved to: $INVENTORY_JSON_FILE"
+        
         # Check if "HuggingFace Model Analyzer" exists in the response
         if echo "$body" | grep -q "HuggingFace Model Analyzer"; then
             print_warning "HuggingFace Model Analyzer found in inventory!"
             
             # Extract inventory names detected by HuggingFace Model Analyzer
-            # Parse JSON to get inventory items with HuggingFace in detectionNotes
-            # Use a simple grep-based approach to extract component names
-            
-            # Save full response to temp file for analysis
             INVENTORY_TEMP_FILE=$(mktemp)
-            echo "$body" > "$INVENTORY_TEMP_FILE"
-            
-            # Extract names where detectionNotes contains "HuggingFace Model Analyzer"
-            # This processes the JSON to find inventory items
             echo "$body" | grep -o '"name": *"[^"]*"' | sed 's/"name": *"\([^"]*\)"/\1/' > "${INVENTORY_TEMP_FILE}.names"
             
-            echo "FOUND:${INVENTORY_TEMP_FILE}.names"
+            echo "FOUND:${INVENTORY_TEMP_FILE}.names:${INVENTORY_JSON_FILE}"
             return 1
         else
             print_success "HuggingFace Model Analyzer NOT found in inventory"
-            echo "PASS"
+            echo "PASS:${INVENTORY_JSON_FILE}"
             return 0
         fi
     fi
@@ -505,6 +502,233 @@ check_inventory_for_huggingface() {
     print_error "Failed to fetch inventory. HTTP Code: $http_code"
     print_error "Response: $body"
     exit 1
+}
+
+################################################################################
+# Function: Generate HTML Report from Inventory JSON
+################################################################################
+generate_html_report() {
+    local json_file=$1
+    local project_id=$2
+    local project_name=$3
+    local html_file="inventory-report-${project_id}.html"
+    
+    print_info "Generating HTML report: $html_file"
+    
+    # Create HTML header
+    cat > "$html_file" << 'EOF_HEADER'
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>CodeInsight Inventory Report</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
+        .header {
+            background-color: #2c3e50;
+            color: white;
+            padding: 20px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 24px;
+        }
+        .header p {
+            margin: 5px 0 0 0;
+            font-size: 14px;
+            opacity: 0.9;
+        }
+        .summary {
+            background-color: white;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .summary-item {
+            display: inline-block;
+            margin-right: 30px;
+            padding: 10px;
+        }
+        .summary-label {
+            font-weight: bold;
+            color: #555;
+            font-size: 12px;
+            text-transform: uppercase;
+        }
+        .summary-value {
+            font-size: 24px;
+            color: #2c3e50;
+            font-weight: bold;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background-color: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            border-radius: 5px;
+            overflow: hidden;
+        }
+        th {
+            background-color: #34495e;
+            color: white;
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+            font-size: 14px;
+            text-transform: uppercase;
+        }
+        td {
+            padding: 12px;
+            border-bottom: 1px solid #ecf0f1;
+            font-size: 13px;
+        }
+        tr:hover {
+            background-color: #f8f9fa;
+        }
+        tr:last-child td {
+            border-bottom: none;
+        }
+        .ai-model-true {
+            background-color: #e74c3c;
+            color: white;
+            padding: 4px 8px;
+            border-radius: 3px;
+            font-weight: bold;
+            font-size: 11px;
+        }
+        .ai-model-false {
+            background-color: #27ae60;
+            color: white;
+            padding: 4px 8px;
+            border-radius: 3px;
+            font-weight: bold;
+            font-size: 11px;
+        }
+        .license {
+            font-family: 'Courier New', monospace;
+            background-color: #ecf0f1;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 12px;
+        }
+        .usage-guidance {
+            max-width: 300px;
+            font-size: 12px;
+            color: #555;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 20px;
+            color: #7f8c8d;
+            font-size: 12px;
+        }
+        .version-na {
+            color: #95a5a6;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+EOF_HEADER
+    
+    # Extract project metadata from JSON
+    local total_items=$(grep -o '"itemNumber"' "$json_file" | wc -l)
+    local ai_model_count=$(grep -c 'HuggingFace Model Analyzer' "$json_file" || echo "0")
+    
+    # Add header and summary to HTML
+    cat >> "$html_file" << EOF
+    <div class="header">
+        <h1>📊 CodeInsight Inventory Report</h1>
+        <p>Project: <strong>${project_name}</strong> (ID: ${project_id})</p>
+        <p>Generated: $(date '+%Y-%m-%d %H:%M:%S')</p>
+    </div>
+    
+    <div class="summary">
+        <div class="summary-item">
+            <div class="summary-label">Total Components</div>
+            <div class="summary-value">${total_items}</div>
+        </div>
+        <div class="summary-item">
+            <div class="summary-label">AI Models Detected</div>
+            <div class="summary-value" style="color: ${ai_model_count:-0} -gt 0 ? '#e74c3c' : '#27ae60';">${ai_model_count}</div>
+        </div>
+    </div>
+    
+    <table>
+        <thead>
+            <tr>
+                <th>Component</th>
+                <th>Version</th>
+                <th>License</th>
+                <th>AI Model</th>
+                <th>Usage Guidance</th>
+            </tr>
+        </thead>
+        <tbody>
+EOF
+    
+    # Parse JSON and extract inventory items
+    # Split JSON into individual inventory items
+    awk '/^  {/{item=""} {item=item $0} /"dockerLayerIds"/{if(item) print item; item=""}' "$json_file" | \
+    while IFS= read -r item_block; do
+        # Extract fields from each inventory item
+        component_name=$(echo "$item_block" | grep -o '"componentName": *"[^"]*"' | sed 's/"componentName": *"\(.*\)"/\1/' | head -1)
+        version_name=$(echo "$item_block" | grep -o '"componentVersionName": *"[^"]*"' | sed 's/"componentVersionName": *"\(.*\)"/\1/' | head -1)
+        license_spdx=$(echo "$item_block" | grep -o '"selectedLicenseSPDXIdentifier": *"[^"]*"' | sed 's/"selectedLicenseSPDXIdentifier": *"\(.*\)"/\1/' | head -1)
+        detection_notes=$(echo "$item_block" | grep -o '"detectionNotes": *"[^"]*"' | sed 's/"detectionNotes": *"\(.*\)"/\1/' | head -1)
+        usage_guidance=$(echo "$item_block" | grep -o '"usageGuidance": *"[^"]*"' | sed 's/"usageGuidance": *"\(.*\)"/\1/' | head -1)
+        
+        # Determine if detected by HuggingFace
+        if echo "$detection_notes" | grep -q "HuggingFace Model Analyzer"; then
+            ai_model='<span class="ai-model-true">TRUE</span>'
+        else
+            ai_model='<span class="ai-model-false">FALSE</span>'
+        fi
+        
+        # Handle N/A values
+        [[ "$version_name" == "N/A" || -z "$version_name" ]] && version_name='<span class="version-na">N/A</span>'
+        [[ -z "$license_spdx" || "$license_spdx" == "I don't know" ]] && license_spdx='<span class="version-na">Unknown</span>' || license_spdx="<span class=\"license\">$license_spdx</span>"
+        
+        # Clean up usage guidance HTML tags and truncate
+        usage_guidance=$(echo "$usage_guidance" | sed 's/<[^>]*>//g' | sed 's/&lt;/</g; s/&gt;/>/g; s/&quot;/"/g' | cut -c 1-150)
+        [[ -z "$usage_guidance" || "$usage_guidance" == "N/A" ]] && usage_guidance='<span class="version-na">No guidance available</span>'
+        
+        # Skip if component name is empty
+        [[ -z "$component_name" ]] && continue
+        
+        # Write table row
+        cat >> "$html_file" << EOF
+            <tr>
+                <td><strong>$component_name</strong></td>
+                <td>$version_name</td>
+                <td>$license_spdx</td>
+                <td>$ai_model</td>
+                <td class="usage-guidance">$usage_guidance</td>
+            </tr>
+EOF
+    done
+    
+    # Close HTML
+    cat >> "$html_file" << 'EOF_FOOTER'
+        </tbody>
+    </table>
+    
+    <div class="footer">
+        <p>Generated by CodeInsight Scan Automation Script</p>
+    </div>
+</body>
+</html>
+EOF_FOOTER
+    
+    print_success "HTML report generated: $html_file"
+    echo "$html_file"
 }
 
 ################################################################################
@@ -603,12 +827,25 @@ main() {
     print_info "Project ID: $PROJECT_ID"
     print_info "Task ID: $TASK_ID"
     
-    if [[ "$RESULT" == "PASS" ]]; then
+    # Parse RESULT to extract JSON file path
+    if [[ "$RESULT" =~ ^PASS: ]]; then
+        JSON_FILE="${RESULT#PASS:}"
+        
+        # Step 7: Generate HTML Report
+        print_info "Generating HTML report..."
+        HTML_REPORT=$(generate_html_report "$JSON_FILE" "$PROJECT_ID" "$PROJECT_NAME")
+        
+        echo ""
         print_success "Result: PASS (No HuggingFace Model Analyzer found)"
+        print_success "HTML Report: $HTML_REPORT"
         echo ""
         exit 0
+        
     elif [[ "$RESULT" =~ ^FOUND: ]]; then
-        INVENTORY_FILE="${RESULT#FOUND:}"
+        # Extract both the names file and JSON file
+        RESULT_DATA="${RESULT#FOUND:}"
+        INVENTORY_FILE="${RESULT_DATA%%:*}"
+        JSON_FILE="${RESULT_DATA#*:}"
         
         echo ""
         print_error "Result: FAIL (HuggingFace Model Analyzer detected)"
@@ -631,6 +868,12 @@ main() {
             INVENTORY_BASE="${INVENTORY_FILE%.names}"
             rm -f "$INVENTORY_BASE"
         fi
+        
+        # Step 7: Generate HTML Report
+        echo ""
+        print_info "Generating HTML report..."
+        HTML_REPORT=$(generate_html_report "$JSON_FILE" "$PROJECT_ID" "$PROJECT_NAME")
+        print_success "HTML Report: $HTML_REPORT"
         
         echo ""
         exit 1
