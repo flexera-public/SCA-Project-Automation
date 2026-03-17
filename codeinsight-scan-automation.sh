@@ -78,7 +78,7 @@ SERVER_URL="${CI_SERVER_URL:-https://demo.mycodeinsight.com}"
 AUTH_TOKEN="${CI_AUTH_TOKEN:-eyJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJ2ZW5rYXQiLCJ1c2VySWQiOjQsImlhdCI6MTc3MjgxMDQ2OH0.HPh6Elra0elWozPwMZOp0XGyHCohDnxtKsnFTiNRfnZpBys_ivKJol8tEjVTLdzJK87m-LzqZZY8NAA1HBnYCA}"
 
 # Hardcoded defaults (EDIT THESE VALUES for your environment)
-DEFAULT_CODEBASE_PATH="/var/lib/jenkins/workspace/SCA-Project-AI-Model-Detection/AIModelFabricated"
+DEFAULT_CODEBASE_PATH="/var/lib/jenkins/workspace/SCA-Project-AI-Model-Detection/Sarthak-Sachan"
 DEFAULT_PROJECT_NAME="BOFAProjectScanHG5"
 
 # Build BASE_URL from SERVER_URL
