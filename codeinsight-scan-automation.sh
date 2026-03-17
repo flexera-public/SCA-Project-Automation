@@ -865,6 +865,11 @@ generate_html_report() {
                 description.innerHTML = 'Showing all components';
             }
         }
+        
+        // Run filter on page load to show AI models by default
+        window.addEventListener('DOMContentLoaded', function() {
+            toggleAIFilter();
+        });
     </script>
 </head>
 <body>
@@ -906,11 +911,11 @@ EOF
     <div class="filter-container">
         <span class="filter-label">🔍 Filter:</span>
         <label class="toggle-switch">
-            <input type="checkbox" id="aiFilterToggle" onchange="toggleAIFilter()">
+            <input type="checkbox" id="aiFilterToggle" onchange="toggleAIFilter()" checked>
             <span class="slider"></span>
         </label>
         <span class="filter-label">Show AI Models Only</span>
-        <span class="filter-description" id="filterDescription">Showing all components</span>
+        <span class="filter-description" id="filterDescription">Loading...</span>
     </div>
     
     <table>
