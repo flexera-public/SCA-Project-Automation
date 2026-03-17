@@ -35,14 +35,16 @@ show_usage() {
     echo "  -h, --help              Show this help message"
     echo ""
     echo "Arguments (optional - will be prompted if not provided):"
-    echo "  CODEBASE_PATH           Full path to zip file (e.g., /path/to/codebase.zip)"
+    echo "  CODEBASE_PATH           Path to directory or zip file"
+    echo "                          - If directory: Will be automatically zipped"
+    echo "                          - If zip file: Will be used directly"
     echo "  PROJECT_NAME            Name of the CodeInsight project"
     echo "  SCANNER_ALIAS           Scanner alias (default: 'scanner')"
     echo "  SERVER_URL              Full server URL (e.g., http://host:8888 or https://host:8443)"
     echo "  AUTH_TOKEN              JWT authentication token"
     echo ""
     echo "Environment Variables (for Jenkins/CI integration):"
-    echo "  CI_CODEBASE_PATH        Path to codebase zip file"
+    echo "  CI_CODEBASE_PATH        Path to codebase directory or zip file"
     echo "  CI_PROJECT_NAME         Project name"
     echo "  CI_SCANNER_ALIAS        Scanner alias (optional)"
     echo "  CI_SERVER_URL           CodeInsight server URL (http://host:port or https://host:port)"
@@ -52,15 +54,17 @@ show_usage() {
     echo "  # Interactive mode (prompts for all inputs)"
     echo "  $0"
     echo ""
-    echo "  # CLI mode with arguments"
-    echo "  $0 /path/to/code.zip MyProject scanner http://localhost:8888 <token>"
+    echo "  # CLI mode with zip file"
+    echo "  $0 /path/to/code.zip MyProject"
     echo ""
-    echo "  # Jenkins mode (using environment variables)"
-    echo "  export CI_SERVER_URL=\"https://secure-server.com:8443\""
-    echo "  export CI_AUTH_TOKEN=\"your-jwt-token\""
-    echo "  export CI_CODEBASE_PATH=\"/path/to/code.zip\""
-    echo "  export CI_PROJECT_NAME=\"MyProject\""
-    echo "  $0"
+    echo "  # CLI mode with directory (auto-zips)"
+    echo "  $0 /path/to/build-output MyProject"
+    echo ""
+    echo "  # Jenkins Freestyle Job (simple command)"
+    echo "  bash run-code-insightscan.sh \${BUILD_DIR} \${PROJECT_NAME}"
+    echo ""
+    echo "  # Jenkins with full parameters"
+    echo "  $0 /path/to/code MyProject scanner http://localhost:8888 <token>"
     exit 0
 }
 
@@ -70,8 +74,12 @@ if [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
 fi
 
 # Default Configuration (can be overridden by arguments or environment variables)
-SERVER_URL="${CI_SERVER_URL:-http://scau20-mysql8.flexera.com:8888}"
-AUTH_TOKEN="${CI_AUTH_TOKEN:-eyJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJhZG1pbiIsInVzZXJJZCI6MSwiaWF0IjoxNzcwNzA3MzE0fQ.UP40pvhzNnkBCdBuxB6dyu987mIoiVF77fZ-8Ag_Rh9L3cV-8sQdv19u_B4y_DxVl-oXw-tuWRRdD3lYXfnDVQ}"
+SERVER_URL="${CI_SERVER_URL:-https://demo.mycodeinsight.com}"
+AUTH_TOKEN="${CI_AUTH_TOKEN:-eyJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJ2ZW5rYXQiLCJ1c2VySWQiOjQsImlhdCI6MTc3MjgxMDQ2OH0.HPh6Elra0elWozPwMZOp0XGyHCohDnxtKsnFTiNRfnZpBys_ivKJol8tEjVTLdzJK87m-LzqZZY8NAA1HBnYCA}"
+
+# Hardcoded defaults (EDIT THESE VALUES for your environment)
+DEFAULT_CODEBASE_PATH="/var/lib/jenkins/workspace/SCA-Project-AI-Model-Detection/AIModelFabricated"
+DEFAULT_PROJECT_NAME="BOFAProjectScanHG5"
 
 # Build BASE_URL from SERVER_URL
 BASE_URL="${SERVER_URL}/codeinsight/api"
@@ -85,20 +93,28 @@ fi
 # Debug mode (set to true to see curl commands)
 DEBUG_MODE=true
 
-# Scan configuration (adjust as needed)
-SCAN_PROFILE_NAME="Basic Scan Profile (Without CL)"
-POLICY_PROFILE_NAME="Default License Policy Profile"
-SCAN_SERVER_ALIAS="${CI_SCANNER_ALIAS:-scanner}"
-AUTO_PUBLISH="true"
-MARK_FILES_AS_REVIEWED="false"
-PROJECT_OWNER="venkat"
-RISK_LEVEL="MEDIUM"
-PRIVATE_PROJECT="false"
+# Scan configuration (adjust as needed - can be overridden by environment variables)
+SCAN_PROFILE_NAME="${CI_SCAN_PROFILE_NAME:-Basic Scan Profile (Without CL)}"
+POLICY_PROFILE_NAME="${CI_POLICY_PROFILE_NAME:-Default License Policy Profile}"
+SCAN_SERVER_ALIAS="${CI_SCANNER_ALIAS:-LocalScanner1}"
+AUTO_PUBLISH="${CI_AUTO_PUBLISH:-true}"
+MARK_FILES_AS_REVIEWED="${CI_MARK_FILES_AS_REVIEWED:-false}"
+PROJECT_OWNER="${CI_PROJECT_OWNER:-venkat}"
+RISK_LEVEL="${CI_RISK_LEVEL:-MEDIUM}"
+PRIVATE_PROJECT="${CI_PRIVATE_PROJECT:-false}"
 
 # Retry configuration for scan status check
 RETRY_INTERVAL_MS=60000  # 60 seconds in milliseconds
 RETRY_COUNT=20
 RETRY_INTERVAL_SEC=$((RETRY_INTERVAL_MS / 1000))
+
+# Cleanup flag for temporary zip files
+CLEANUP_ZIP=false
+TEMP_ZIP_PATH=""
+
+# Initialize with defaults (can be overridden by environment variables or CLI arguments)
+CODEBASE_PATH="${CI_CODEBASE_PATH:-${BUILD_LOCATION:-$DEFAULT_CODEBASE_PATH}}"
+PROJECT_NAME="${CI_PROJECT_NAME:-${BUILD_PROJECT_NAME:-$DEFAULT_PROJECT_NAME}}"
 
 # Parse command-line arguments if provided
 if [[ -n "$1" ]] && [[ "$1" != "-"* ]]; then
@@ -169,6 +185,57 @@ validate_configuration() {
 }
 
 ################################################################################
+# Function: Cleanup temporary files
+################################################################################
+cleanup_temp_files() {
+    if [[ "$CLEANUP_ZIP" == "true" ]] && [[ -n "$TEMP_ZIP_PATH" ]] && [[ -f "$TEMP_ZIP_PATH" ]]; then
+        print_info "Cleaning up temporary zip file: $TEMP_ZIP_PATH"
+        rm -f "$TEMP_ZIP_PATH"
+        print_success "Temporary zip file removed"
+    fi
+}
+
+################################################################################
+# Function: Create zip file from directory
+################################################################################
+create_zip_from_directory() {
+    local source_dir=$1
+    local zip_filename="${PROJECT_NAME// /_}_$(date +%Y%m%d_%H%M%S).zip"
+    local zip_path="${WORKSPACE_DIR:-$(dirname "$source_dir")}/$zip_filename"
+    
+    print_info "Creating zip file from directory: $source_dir"
+    print_info "Output zip file: $zip_path"
+    
+    # Check if zip command is available
+    if ! command -v zip &> /dev/null; then
+        print_error "zip command not found. Please install zip utility."
+        print_info "Install with: sudo apt-get install zip (Ubuntu/Debian) or yum install zip (CentOS/RHEL)"
+        exit 1
+    fi
+    
+    # Create zip file (exclude hidden files and common build artifacts)
+    cd "$(dirname "$source_dir")"
+    TEMP_ZIP_PATH="$zip_path"  # Store for cleanup
+    local dir_name=$(basename "$source_dir")
+    
+    print_debug "zip -r \"$zip_path\" \"$dir_name\" -x '*.git*' '*.svn*' '*node_modules*' '*target*' '*build*' '*.class'"
+    
+    zip -r "$zip_path" "$dir_name" \
+        -x '*.git*' '*.svn*' '*node_modules*' '*.DS_Store' \
+        > /dev/null 2>&1
+    
+    if [[ $? -eq 0 ]] && [[ -f "$zip_path" ]]; then
+        local zip_size=$(du -h "$zip_path" | cut -f1)
+        print_success "Zip file created successfully: $zip_path ($zip_size)"
+        echo "$zip_path"
+        return 0
+    else
+        print_error "Failed to create zip file"
+        exit 1
+    fi
+}
+
+################################################################################
 # Function: Validate input parameters
 ################################################################################
 validate_inputs() {
@@ -177,9 +244,33 @@ validate_inputs() {
         exit 1
     fi
 
-    if [[ ! -f "$CODEBASE_PATH" ]]; then
-        print_error "Codebase file not found: $CODEBASE_PATH"
+    # Check if path exists (file or directory)
+    if [[ ! -e "$CODEBASE_PATH" ]]; then
+        print_error "Codebase path not found: $CODEBASE_PATH"
         exit 1
+    fi
+
+    # If it's a directory, create a zip file
+    if [[ -d "$CODEBASE_PATH" ]]; then
+        print_info "Codebase path is a directory. Creating zip file..."
+        CODEBASE_ZIP=$(create_zip_from_directory "$CODEBASE_PATH")
+        if [[ -z "$CODEBASE_ZIP" ]]; then
+            print_error "Failed to create zip from directory"
+            exit 1
+        fi
+        # Update CODEBASE_PATH to point to the new zip file
+        CODEBASE_PATH="$CODEBASE_ZIP"
+        CLEANUP_ZIP=true  # Flag to cleanup the temporary zip after upload
+    elif [[ -f "$CODEBASE_PATH" ]]; then
+        # Check if it's a zip file
+        if [[ "$CODEBASE_PATH" == *.zip ]]; then
+            print_success "Using existing zip file: $CODEBASE_PATH"
+            CLEANUP_ZIP=false
+        else
+            print_error "File must be a zip file. Got: $CODEBASE_PATH"
+            print_info "Please provide either a directory or a .zip file"
+            exit 1
+        fi
     fi
 
     if [[ -z "$PROJECT_NAME" ]]; then
@@ -486,9 +577,28 @@ check_inventory_for_huggingface() {
         if echo "$body" | grep -q "HuggingFace Model Analyzer"; then
             print_warning "HuggingFace Model Analyzer found in inventory!"
             
-            # Extract inventory names detected by HuggingFace Model Analyzer
+            # Extract ONLY component names detected by HuggingFace Model Analyzer
             INVENTORY_TEMP_FILE=$(mktemp)
-            echo "$body" | grep -o '"name": *"[^"]*"' | sed 's/"name": *"\([^"]*\)"/\1/' > "${INVENTORY_TEMP_FILE}.names"
+            
+            # Extract inventory items and filter by HuggingFace detection
+            inventory_section=$(echo "$body" | sed 's/.*"inventoryItems":\[//' | sed 's/\]}\s*$//')
+            inventory_with_separators=$(echo "$inventory_section" | sed 's/{[[:space:]]*"itemNumber":/\n___ITEM_START___\n{"itemNumber":/g')
+            
+            # Process each item and extract names only if detected by HuggingFace
+            while IFS= read -r line; do
+                if [[ "$line" == "___ITEM_START___" ]] || [[ ! "$line" =~ ^\{\"itemNumber\": ]]; then
+                    continue
+                fi
+                
+                # Check if this item has HuggingFace in detectionNotes
+                if echo "$line" | grep -q "HuggingFace"; then
+                    # Extract component name for HuggingFace-detected items only
+                    comp_name=$(echo "$line" | grep -o '"componentName":"[^"]*"' | sed 's/"componentName":"\([^"]*\)"/\1/' | head -1)
+                    if [[ -n "$comp_name" ]]; then
+                        echo "$comp_name"
+                    fi
+                fi
+            done < <(echo "$inventory_with_separators") | sort -u > "${INVENTORY_TEMP_FILE}.names"
             
             echo "FOUND:${INVENTORY_TEMP_FILE}.names:${INVENTORY_JSON_FILE}"
             return 1
@@ -511,7 +621,16 @@ generate_html_report() {
     local json_file=$1
     local project_id=$2
     local project_name=$3
-    local html_file="inventory-report-${project_id}.html"
+    
+    # Include Jenkins build number if available, otherwise use timestamp
+    local build_identifier=""
+    if [[ -n "${BUILD_NUMBER}" ]]; then
+        build_identifier="-build${BUILD_NUMBER}"
+    else
+        build_identifier="-$(date +%Y%m%d-%H%M%S)"
+    fi
+    
+    local html_file="inventory-report-${project_id}${build_identifier}.html"
     
     print_info "Generating HTML report: $html_file"
     
@@ -521,7 +640,7 @@ generate_html_report() {
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>CodeInsight Inventory Report</title>
+    <title>Generated by Code Insight (Revenera SCA)</title>
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -622,6 +741,15 @@ generate_html_report() {
             max-width: 300px;
             font-size: 12px;
             color: #555;
+        }
+        .component-link {
+            color: #2c3e50;
+            text-decoration: none;
+            font-weight: bold;
+        }
+        .component-link:hover {
+            color: #3498db;
+            text-decoration: underline;
         }
         .footer {
             text-align: center;
@@ -749,8 +877,18 @@ EOF_HEADER
     # Add header and summary to HTML
     cat >> "$html_file" << EOF
     <div class="header">
-        <h1>📊 CodeInsight Inventory Report</h1>
+        <h1>Generated by Code Insight (Revenera SCA)</h1>
         <p>Project: <strong>${project_name}</strong> (ID: ${project_id})</p>
+EOF
+    
+    # Add Jenkins build number if available
+    if [[ -n "${BUILD_NUMBER}" ]]; then
+        cat >> "$html_file" << EOF
+        <p>Jenkins Build: <strong>#${BUILD_NUMBER}</strong></p>
+EOF
+    fi
+    
+    cat >> "$html_file" << EOF
         <p>Generated: $(date '+%Y-%m-%d %H:%M:%S')</p>
     </div>
     
@@ -826,6 +964,7 @@ EOF
         
         # Extract fields using grep and sed
         component_name=$(echo "$item_json" | grep -o '"componentName":"[^"]*"' | sed 's/"componentName":"\([^"]*\)"/\1/' | head -1)
+        component_url=$(echo "$item_json" | grep -o '"componentUrl":"[^"]*"' | sed 's/"componentUrl":"\([^"]*\)"/\1/' | head -1)
         version_name=$(echo "$item_json" | grep -o '"componentVersionName":"[^"]*"' | sed 's/"componentVersionName":"\([^"]*\)"/\1/' | head -1)
         license_spdx=$(echo "$item_json" | grep -o '"selectedLicenseSPDXIdentifier":"[^"]*"' | sed 's/"selectedLicenseSPDXIdentifier":"\([^"]*\)"/\1/' | head -1)
         
@@ -866,10 +1005,17 @@ EOF
                 usage_guidance='<span class="version-na">No guidance available</span>'
             fi
             
+            # Create clickable component name with URL
+            if [[ -n "$component_url" ]]; then
+                component_display="<a href=\"$component_url\" class=\"component-link\" target=\"_blank\">$component_name</a>"
+            else
+                component_display="<strong>$component_name</strong>"
+            fi
+            
             # Write table row to HTML file with data attribute for filtering
             cat >> "$html_file" << EOF
             <tr data-ai-model="$ai_model_flag">
-                <td><strong>$component_name</strong></td>
+                <td>$component_display</td>
                 <td>$version_name</td>
                 <td>$license_spdx</td>
                 <td>$ai_model</td>
@@ -889,7 +1035,7 @@ EOF
     </table>
     
     <div class="footer">
-        <p>Generated by CodeInsight Scan Automation Script</p>
+        <p>Generated by Code Insight (Revenera SCA) Scan Automation Script</p>
     </div>
 </body>
 </html>
@@ -903,6 +1049,10 @@ EOF_FOOTER
 # Main Script Execution
 ################################################################################
 main() {
+    # Allow function arguments to override global variables
+    if [[ -n "$1" ]]; then CODEBASE_PATH="$1"; fi
+    if [[ -n "$2" ]]; then PROJECT_NAME="$2"; fi
+    
     echo ""
     echo "============================================================================="
     echo "   CodeInsight Project Automation Script"
@@ -1006,6 +1156,9 @@ main() {
         echo ""
         print_success "Result: PASS (No HuggingFace Model Analyzer found)"
         print_success "HTML Report: $HTML_REPORT"
+        
+        # Cleanup temporary files before exit
+        cleanup_temp_files
         echo ""
         exit 0
         
@@ -1041,16 +1194,26 @@ main() {
         echo ""
         print_info "Generating HTML report..."
         HTML_REPORT=$(generate_html_report "$JSON_FILE" "$PROJECT_ID" "$PROJECT_NAME")
+        
+        print_error "Result: FAIL (HuggingFace Model Analyzer detected)"
         print_success "HTML Report: $HTML_REPORT"
         
-        echo ""
+        # Cleanup temporary files before exit
+        cleanup_temp_files
         exit 1
     else
         print_error "Result: FAIL (Unknown error occurred)"
         echo ""
+        
+        # Cleanup temporary files before exit
+        cleanup_temp_files
         exit 1
     fi
 }
 
 # Execute main function
+# Values are set from:
+#   1. Hardcoded defaults (DEFAULT_CODEBASE_PATH, DEFAULT_PROJECT_NAME)
+#   2. Environment variables (BUILD_LOCATION, PROJECT_NAME, or CI_* variables)
+#   3. Command-line arguments (if script called with: bash test.sh <path> <name>)
 main
