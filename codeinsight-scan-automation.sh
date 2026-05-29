@@ -1058,8 +1058,9 @@ generate_html_report() {
 EOF_HEADER
     
     # Extract project metadata from JSON
+    # grep -o counts occurrences (works on compact single-line JSON); grep -c would always return 1
     local total_items=$(grep -o '"itemNumber"' "$json_file" | wc -l)
-    local ai_model_count=$(grep -c 'HuggingFace Model Analyzer' "$json_file" || echo "0")
+    local ai_model_count=$(grep -o 'HuggingFace Model Analyzer' "$json_file" | wc -l)
     
     # Add header and summary to HTML
     cat >> "$html_file" << EOF
@@ -1086,7 +1087,7 @@ EOF
         </div>
         <div class="summary-item">
             <div class="summary-label">AI Models Detected</div>
-            <div class="summary-value" style="color: ${ai_model_count:-0} -gt 0 ? '#e74c3c' : '#27ae60';">${ai_model_count}</div>
+            <div class="summary-value" style="color: $([ ${ai_model_count:-0} -gt 0 ] && echo '#e74c3c' || echo '#27ae60');">${ai_model_count}</div>
         </div>
         <div class="summary-item">
             <div class="summary-label">AI Term Violations</div>
