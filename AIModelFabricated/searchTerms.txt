@@ -1,0 +1,17 @@
+Triggers the scan
+Retrieves search terms from the project
+Checks for the existence of the following search terms (hard coded in the script)
+MODEL_PATH
+model=
+pipeline
+"content": [
+            {"type":
+from_pretrained
+from transformers
+from openai
+pip install vllm
+vllm serve
+docker model
+sglang
+OPENAI_BASE_URL
+OPENAI_API_KEY

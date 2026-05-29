@@ -546,6 +546,134 @@ wait_for_scan_completion() {
 }
 
 ################################################################################
+# Function: Check project evidences for AI-related search terms
+################################################################################
+check_evidences_for_ai_terms() {
+    local project_id=$1
+
+    print_info "Checking project evidences for AI-related search terms..."
+
+    print_debug "curl -X GET '${BASE_URL}/projects/${project_id}/evidences' \\"
+    print_debug "  -H 'accept: */*' \\"
+    print_debug "  -H 'Authorization: Bearer ${AUTH_TOKEN}'"
+
+    response=$(curl -s -w "\n%{http_code}" $CURL_SSL_FLAGS -X GET \
+        "${BASE_URL}/projects/${project_id}/evidences" \
+        -H "accept: */*" \
+        -H "Authorization: Bearer ${AUTH_TOKEN}")
+
+    http_code=$(echo "$response" | tail -n 1)
+    body=$(echo "$response" | sed '$d')
+
+    if [[ "$http_code" -ne 200 ]]; then
+        print_warning "Could not fetch evidences (HTTP $http_code). Skipping AI term check."
+        return 0
+    fi
+
+    print_success "Evidences fetched successfully"
+
+    local evidences_file
+    evidences_file=$(mktemp /tmp/evidences_XXXXXX.json)
+    echo "$body" > "$evidences_file"
+    print_debug "Evidences saved to: $evidences_file"
+
+    # Determine Python interpreter
+    local py_cmd=""
+    if command -v python3 &>/dev/null; then
+        py_cmd="python3"
+    elif command -v python &>/dev/null; then
+        py_cmd="python"
+    fi
+
+    local found_violations=false
+    local violation_list=()
+
+    if [[ -n "$py_cmd" ]]; then
+        local py_output
+        py_output=$($py_cmd - "$evidences_file" <<'PYEOF'
+import json, sys
+
+evidences_file = sys.argv[1]
+
+AI_TERMS = [
+    "MODEL_PATH",
+    "model=",
+    "pipeline",
+    '"content": [',
+    '{"type":',
+    "from_pretrained",
+    "from transformers",
+    "from openai",
+    "pip install vllm",
+    "vllm serve",
+    "docker model",
+    "sglang",
+    "OPENAI_BASE_URL",
+    "OPENAI_API_KEY"
+]
+
+try:
+    with open(evidences_file, 'r') as f:
+        data = json.load(f)
+except Exception as e:
+    sys.stderr.write("WARNING: Could not parse evidences JSON: " + str(e) + "\n")
+    sys.exit(0)
+
+ai_terms_lower = [t.lower() for t in AI_TERMS]
+
+items = data.get("data", [])
+for item in items:
+    file_path = item.get("filePath", "")
+    search_matches = item.get("searchTextMatches", [])
+    for match in search_matches:
+        match_lower = match.lower().strip()
+        for i, term_lower in enumerate(ai_terms_lower):
+            if match_lower == term_lower or term_lower in match_lower:
+                print("VIOLATION\t" + AI_TERMS[i] + "\t" + file_path)
+                break
+PYEOF
+        )
+
+        while IFS=$'\t' read -r marker term fpath; do
+            if [[ "$marker" == "VIOLATION" ]]; then
+                violation_list+=("Failed because of '${term}' found in this file: ${fpath}")
+                found_violations=true
+            fi
+        done < <(echo "$py_output")
+    else
+        # Fallback: grep-based parsing when Python is unavailable
+        print_warning "Python not available - using grep-based evidence check (file path association not available)"
+        local grep_terms=(
+            "MODEL_PATH" "model=" "pipeline" "from_pretrained"
+            "from transformers" "from openai" "pip install vllm"
+            "vllm serve" "docker model" "sglang"
+            "OPENAI_BASE_URL" "OPENAI_API_KEY"
+        )
+        for term in "${grep_terms[@]}"; do
+            if grep -qi "\"${term}\"" "$evidences_file" 2>/dev/null; then
+                violation_list+=("Failed because of '${term}' found in scanned files (install Python for file-level details)")
+                found_violations=true
+            fi
+        done
+    fi
+
+    rm -f "$evidences_file"
+
+    if [[ "$found_violations" == "true" ]]; then
+        print_error "AI-related search terms detected in scanned files!"
+        echo "" >&2
+        for violation in "${violation_list[@]}"; do
+            print_error "  $violation"
+        done
+        echo "" >&2
+        return 1
+    fi
+
+    print_success "No AI-related search terms found in file evidences"
+    return 0
+}
+
+################################################################################
 # Function: Get project inventory and check for HuggingFace Model Analyzer
 ################################################################################
 check_inventory_for_huggingface() {
@@ -1139,7 +1267,11 @@ main() {
     # Step 5: Wait for scan completion
     wait_for_scan_completion "$TASK_ID"
 
-    # Step 6: Check inventory for HuggingFace Model Analyzer
+    # Step 6a: Check evidences for AI-related search terms
+    EVIDENCE_CHECK_PASSED=true
+    check_evidences_for_ai_terms "$PROJECT_ID" || EVIDENCE_CHECK_PASSED=false
+
+    # Step 6b: Check inventory for HuggingFace Model Analyzer
     RESULT=$(check_inventory_for_huggingface "$PROJECT_ID")
 
     echo ""
@@ -1153,32 +1285,40 @@ main() {
     # Parse RESULT to extract JSON file path
     if [[ "$RESULT" =~ ^PASS: ]]; then
         JSON_FILE="${RESULT#PASS:}"
-        
+
         # Step 7: Generate HTML Report
         print_info "Generating HTML report..."
         HTML_REPORT=$(generate_html_report "$JSON_FILE" "$PROJECT_ID" "$PROJECT_NAME")
-        
+
         echo ""
-        print_success "Result: PASS (No HuggingFace Model Analyzer found)"
+        if [[ "$EVIDENCE_CHECK_PASSED" == "false" ]]; then
+            print_error "Result: FAIL (AI-related search terms detected in file evidences — see violations above)"
+            print_success "HTML Report: $HTML_REPORT"
+            cleanup_temp_files
+            echo ""
+            exit 1
+        fi
+
+        print_success "Result: PASS (No HuggingFace Model Analyzer found, no AI search terms detected)"
         print_success "HTML Report: $HTML_REPORT"
-        
+
         # Cleanup temporary files before exit
         cleanup_temp_files
         echo ""
         exit 0
-        
+
     elif [[ "$RESULT" =~ ^FOUND: ]]; then
         # Extract both the names file and JSON file
         RESULT_DATA="${RESULT#FOUND:}"
         INVENTORY_FILE="${RESULT_DATA%%:*}"
         JSON_FILE="${RESULT_DATA#*:}"
-        
+
         echo ""
         print_error "Result: FAIL (HuggingFace Model Analyzer detected)"
         echo ""
         print_info "HuggingFace Analyzer detected below inventories:"
         echo ""
-        
+
         if [[ -f "$INVENTORY_FILE" ]]; then
             # Read and display inventory names
             while IFS= read -r inventory_name; do
@@ -1186,30 +1326,35 @@ main() {
                     echo "  • $inventory_name"
                 fi
             done < "$INVENTORY_FILE"
-            
+
             # Cleanup temp file
             rm -f "$INVENTORY_FILE"
-            
+
             # Remove the base temp file if it exists
             INVENTORY_BASE="${INVENTORY_FILE%.names}"
             rm -f "$INVENTORY_BASE"
         fi
-        
+
+        if [[ "$EVIDENCE_CHECK_PASSED" == "false" ]]; then
+            echo ""
+            print_error "Additionally: AI-related search terms were detected in file evidences (see violations above)"
+        fi
+
         # Step 7: Generate HTML Report
         echo ""
         print_info "Generating HTML report..."
         HTML_REPORT=$(generate_html_report "$JSON_FILE" "$PROJECT_ID" "$PROJECT_NAME")
-        
+
         print_error "Result: FAIL (HuggingFace Model Analyzer detected)"
         print_success "HTML Report: $HTML_REPORT"
-        
+
         # Cleanup temporary files before exit
         cleanup_temp_files
         exit 1
     else
         print_error "Result: FAIL (Unknown error occurred)"
         echo ""
-        
+
         # Cleanup temporary files before exit
         cleanup_temp_files
         exit 1
