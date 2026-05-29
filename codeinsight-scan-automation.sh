@@ -112,6 +112,10 @@ RETRY_INTERVAL_SEC=$((RETRY_INTERVAL_MS / 1000))
 CLEANUP_ZIP=false
 TEMP_ZIP_PATH=""
 
+# Global array to store AI search term violations (populated by check_evidences_for_ai_terms)
+# Each entry format: "SEARCH_TERM||FILE_PATH"
+AI_VIOLATIONS=()
+
 # Initialize with defaults (can be overridden by environment variables or CLI arguments)
 CODEBASE_PATH="${CI_CODEBASE_PATH:-${BUILD_LOCATION:-$DEFAULT_CODEBASE_PATH}}"
 PROJECT_NAME="${CI_PROJECT_NAME:-${BUILD_PROJECT_NAME:-$DEFAULT_PROJECT_NAME}}"
@@ -586,8 +590,9 @@ check_evidences_for_ai_terms() {
         py_cmd="python"
     fi
 
+    # Reset global violations array
+    AI_VIOLATIONS=()
     local found_violations=false
-    local violation_list=()
 
     if [[ -n "$py_cmd" ]]; then
         local py_output
@@ -637,7 +642,7 @@ PYEOF
 
         while IFS=$'\t' read -r marker term fpath; do
             if [[ "$marker" == "VIOLATION" ]]; then
-                violation_list+=("Failed because of '${term}' found in this file: ${fpath}")
+                AI_VIOLATIONS+=("${term}||${fpath}")
                 found_violations=true
             fi
         done < <(echo "$py_output")
@@ -652,7 +657,7 @@ PYEOF
         )
         for term in "${grep_terms[@]}"; do
             if grep -qi "\"${term}\"" "$evidences_file" 2>/dev/null; then
-                violation_list+=("Failed because of '${term}' found in scanned files (install Python for file-level details)")
+                AI_VIOLATIONS+=("${term}||unknown (install Python for file-level details)")
                 found_violations=true
             fi
         done
@@ -663,8 +668,10 @@ PYEOF
     if [[ "$found_violations" == "true" ]]; then
         print_error "AI-related search terms detected in scanned files!"
         echo "" >&2
-        for violation in "${violation_list[@]}"; do
-            print_error "  $violation"
+        for violation in "${AI_VIOLATIONS[@]}"; do
+            v_term="${violation%%||*}"
+            v_file="${violation##*||}"
+            print_error "  Failed because of '${v_term}' found in this file: ${v_file}"
         done
         echo "" >&2
         return 1
@@ -961,6 +968,43 @@ generate_html_report() {
         tr.hidden {
             display: none;
         }
+
+        /* AI Search Term Violations section */
+        .violations-section {
+            margin-top: 30px;
+        }
+        .violations-section h2 {
+            color: #c0392b;
+            font-size: 18px;
+            margin-bottom: 10px;
+            padding-bottom: 8px;
+            border-bottom: 2px solid #e74c3c;
+        }
+        .violations-banner {
+            background-color: #fdf0ef;
+            border-left: 4px solid #e74c3c;
+            padding: 12px 16px;
+            border-radius: 0 4px 4px 0;
+            margin-bottom: 15px;
+            font-size: 14px;
+            color: #c0392b;
+            font-weight: 600;
+        }
+        .search-term-badge {
+            background-color: #e74c3c;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .file-path-cell {
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            color: #2c3e50;
+            word-break: break-all;
+        }
     </style>
     <script>
         function toggleAIFilter() {
@@ -1034,6 +1078,10 @@ EOF
         <div class="summary-item">
             <div class="summary-label">AI Models Detected</div>
             <div class="summary-value" style="color: ${ai_model_count:-0} -gt 0 ? '#e74c3c' : '#27ae60';">${ai_model_count}</div>
+        </div>
+        <div class="summary-item">
+            <div class="summary-label">AI Term Violations</div>
+            <div class="summary-value" style="color: $([ ${#AI_VIOLATIONS[@]} -gt 0 ] && echo '#e74c3c' || echo '#27ae60');">${#AI_VIOLATIONS[@]}</div>
         </div>
     </div>
     
@@ -1162,12 +1210,53 @@ EOF
     done < <(echo "$inventory_with_separators")
     
     print_success "Processed $item_count inventory items into HTML report"
-    
-    # Close HTML
-    cat >> "$html_file" << 'EOF_FOOTER'
+
+    # Close inventory table
+    cat >> "$html_file" << 'EOF_TABLE_CLOSE'
         </tbody>
     </table>
-    
+EOF_TABLE_CLOSE
+
+    # Add AI Search Term Violations section if any violations were found
+    if [[ ${#AI_VIOLATIONS[@]} -gt 0 ]]; then
+        cat >> "$html_file" << EOF
+    <div class="violations-section">
+        <h2>&#9888; AI Search Term Violations</h2>
+        <div class="violations-banner">
+            ${#AI_VIOLATIONS[@]} AI-related search term(s) detected in scanned files &mdash; build failed.
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Search Term</th>
+                    <th>File Path</th>
+                </tr>
+            </thead>
+            <tbody>
+EOF
+        local v_idx=0
+        for violation in "${AI_VIOLATIONS[@]}"; do
+            v_idx=$((v_idx + 1))
+            v_term="${violation%%||*}"
+            v_file="${violation##*||}"
+            cat >> "$html_file" << EOF
+                <tr>
+                    <td>${v_idx}</td>
+                    <td><span class="search-term-badge">${v_term}</span></td>
+                    <td class="file-path-cell">${v_file}</td>
+                </tr>
+EOF
+        done
+        cat >> "$html_file" << 'EOF_VT'
+            </tbody>
+        </table>
+    </div>
+EOF_VT
+    fi
+
+    # Close HTML
+    cat >> "$html_file" << 'EOF_FOOTER'
     <div class="footer">
         <p>Generated by Code Insight (Revenera SCA) Scan Automation Script</p>
     </div>
