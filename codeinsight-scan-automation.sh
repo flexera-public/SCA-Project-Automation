@@ -1033,6 +1033,12 @@ generate_html_report() {
                 }
             });
             
+            // Show/hide AI Search Term Violations section with the filter
+            const violationsSection = document.querySelector('.violations-section');
+            if (violationsSection) {
+                violationsSection.style.display = checkbox.checked ? 'block' : 'none';
+            }
+
             // Update filter description
             const description = document.getElementById('filterDescription');
             if (checkbox.checked) {
