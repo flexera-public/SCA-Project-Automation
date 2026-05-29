@@ -344,7 +344,7 @@ create_project() {
   "risk": "$RISK_LEVEL",
   "privateProject": $PRIVATE_PROJECT,
   "scanServerAlias": "$SCAN_SERVER_ALIAS",
-  "deleteEmptyInventory": true,
+  "deleteEmptyInventory": true
 }
 EOF
 )
