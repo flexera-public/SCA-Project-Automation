@@ -1012,7 +1012,7 @@ generate_html_report() {
     <script>
         function toggleAIFilter() {
             const checkbox = document.getElementById('aiFilterToggle');
-            const rows = document.querySelectorAll('tbody tr');
+            const rows = document.querySelectorAll('#inventory-table tbody tr');
             let visibleCount = 0;
             
             rows.forEach(row => {
@@ -1104,7 +1104,7 @@ EOF
         <span class="filter-description" id="filterDescription">Loading...</span>
     </div>
     
-    <table>
+    <table id="inventory-table">
         <thead>
             <tr>
                 <th>Component</th>
