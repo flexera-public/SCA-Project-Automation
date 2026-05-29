@@ -1058,9 +1058,9 @@ generate_html_report() {
 EOF_HEADER
     
     # Extract project metadata from JSON
-    # grep -o counts occurrences (works on compact single-line JSON); grep -c would always return 1
     local total_items=$(grep -o '"itemNumber"' "$json_file" | wc -l)
-    local ai_model_count=$(grep -o 'HuggingFace Model Analyzer' "$json_file" | wc -l)
+    # ai_model_count is calculated accurately during the inventory loop below (placeholder replaced after loop)
+    local ai_model_item_count=0
     
     # Add header and summary to HTML
     cat >> "$html_file" << EOF
@@ -1087,7 +1087,7 @@ EOF
         </div>
         <div class="summary-item">
             <div class="summary-label">AI Models Detected</div>
-            <div class="summary-value" style="color: $([ ${ai_model_count:-0} -gt 0 ] && echo '#e74c3c' || echo '#27ae60');">${ai_model_count}</div>
+            <div class="summary-value" id="ai-model-count-value">__AI_MODEL_COUNT__</div>
         </div>
         <div class="summary-item">
             <div class="summary-label">AI Term Violations</div>
@@ -1176,6 +1176,7 @@ EOF
             if [[ "$detection_notes" =~ HuggingFace ]]; then
                 ai_model='<span class="ai-model-true">TRUE</span>'
                 ai_model_flag="true"
+                ai_model_item_count=$((ai_model_item_count + 1))
             else
                 ai_model='<span class="ai-model-false">FALSE</span>'
                 ai_model_flag="false"
@@ -1220,6 +1221,11 @@ EOF
     done < <(echo "$inventory_with_separators")
     
     print_success "Processed $item_count inventory items into HTML report"
+
+    # Replace AI model count placeholder now that the accurate count is known from the loop
+    local ai_color
+    ai_color=$([ "$ai_model_item_count" -gt 0 ] && echo '#e74c3c' || echo '#27ae60')
+    sed -i "s|__AI_MODEL_COUNT__|<span style=\"color:${ai_color}\">${ai_model_item_count}<\/span>|g" "$html_file"
 
     # Close inventory table
     cat >> "$html_file" << 'EOF_TABLE_CLOSE'
