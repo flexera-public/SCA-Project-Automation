@@ -116,6 +116,9 @@ TEMP_ZIP_PATH=""
 # Each entry format: "SEARCH_TERM||FILE_PATH"
 AI_VIOLATIONS=()
 
+# Global variable to hold the HTML report filename (set by generate_html_report)
+HTML_REPORT_FILE=""
+
 # Initialize with defaults (can be overridden by environment variables or CLI arguments)
 CODEBASE_PATH="${CI_CODEBASE_PATH:-${BUILD_LOCATION:-$DEFAULT_CODEBASE_PATH}}"
 PROJECT_NAME="${CI_PROJECT_NAME:-${BUILD_PROJECT_NAME:-$DEFAULT_PROJECT_NAME}}"
@@ -1265,7 +1268,7 @@ EOF_VT
 EOF_FOOTER
     
     print_success "HTML report generated: $html_file"
-    echo "$html_file"
+    HTML_REPORT_FILE="$html_file"
 }
 
 ################################################################################
@@ -1378,7 +1381,8 @@ main() {
 
         # Step 7: Generate HTML Report
         print_info "Generating HTML report..."
-        HTML_REPORT=$(generate_html_report "$JSON_FILE" "$PROJECT_ID" "$PROJECT_NAME")
+        generate_html_report "$JSON_FILE" "$PROJECT_ID" "$PROJECT_NAME"
+        HTML_REPORT="$HTML_REPORT_FILE"
 
         echo ""
         if [[ "$EVIDENCE_CHECK_PASSED" == "false" ]]; then
@@ -1433,7 +1437,8 @@ main() {
         # Step 7: Generate HTML Report
         echo ""
         print_info "Generating HTML report..."
-        HTML_REPORT=$(generate_html_report "$JSON_FILE" "$PROJECT_ID" "$PROJECT_NAME")
+        generate_html_report "$JSON_FILE" "$PROJECT_ID" "$PROJECT_NAME"
+        HTML_REPORT="$HTML_REPORT_FILE"
 
         print_error "Result: FAIL (HuggingFace Model Analyzer detected)"
         print_success "HTML Report: $HTML_REPORT"
